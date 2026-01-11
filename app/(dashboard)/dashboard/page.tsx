@@ -1,0 +1,8 @@
+export default function DashboardPage() {
+  return (
+    <div className="space-y-6">
+      <h1>Dashboard</h1>
+      <p className="text-muted-foreground">Protected dashboard placeholder</p>
+    </div>
+  )
+}

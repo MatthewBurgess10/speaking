@@ -8,6 +8,8 @@ import { TimeSelector } from "./time-selector"
 import { useAudioRecorder } from "@/hooks/use-audio-record"
 import { Button } from "@/components/ui/button"
 import type { SpeakingStructureWithRules } from "@/lib/speaking-structures"
+import { useUser } from "@/components/user-provider" // Access the anonymous profileId
+import { uploadDrillAttempt } from "@/lib/user/attempt"
 
 type DrillPhase = "setup" | "countdown" | "recording" | "complete"
 
@@ -25,6 +27,9 @@ export function DrillController() {
   const { startRecording, stopRecording, error: recorderError } = useAudioRecorder()
   const timerRef = useRef<NodeJS.Timeout | null>(null)
   const startTimeRef = useRef<number>(0)
+
+  const { profileId } = useUser()
+  const [isUploading, setIsUploading] = useState(false)
 
   const fetchRandomStructure = useCallback(async () => {
     setIsLoadingStructure(true)
@@ -53,39 +58,10 @@ export function DrillController() {
     fetchRandomStructure()
   }, [fetchRandomStructure])
 
-  //testing.
-  if (!structure) {
-    console.log("No structure found")
-  } else {
-    console.log(structure.rules_definition)
-  }
-
   const startDrill = useCallback(() => {
     if (!structure) return
     setPhase("countdown")
   }, [structure])
-
-  const handleCountdownComplete = useCallback(async () => {
-    setPhase("recording")
-    setElapsedMs(0)
-    startTimeRef.current = Date.now()
-
-    await startRecording()
-
-    timerRef.current = setInterval(() => {
-      const elapsed = Date.now() - startTimeRef.current
-      setElapsedMs(elapsed)
-
-      if (elapsed >= selectedTime * 1000) {
-        if (timerRef.current) {
-          clearInterval(timerRef.current)
-          timerRef.current = null
-        }
-        stopRecording()
-        setPhase("complete")
-      }
-    }, 50)
-  }, [selectedTime, startRecording, stopRecording])
 
   const resetDrill = useCallback(() => {
     if (timerRef.current) {
@@ -104,6 +80,56 @@ export function DrillController() {
       }
     }
   }, [])
+
+  const handleStopAndUpload = useCallback(async () => {
+    setPhase("complete")
+    setIsUploading(true)
+    
+    try {
+      const audioBlob = await stopRecording()
+      
+      if (audioBlob && structure && profileId) {
+        await uploadDrillAttempt({
+          blob: audioBlob,
+          profileId: profileId,
+          structureId: structure.id,
+          duration: selectedTime
+        })
+      }
+    } catch (err) {
+      console.error("Upload failed:", err)
+      setStructureError("Failed to save recording. Please try again.")
+    } finally {
+      setIsUploading(false)
+    }
+  }, [stopRecording, structure, profileId, selectedTime])
+
+  const handleCountdownComplete = useCallback(async () => {
+    setPhase("recording")
+    setElapsedMs(0)
+    startTimeRef.current = Date.now()
+
+    // Handle Mic Permissions
+    try {
+      await startRecording()
+    } catch (err) {
+      setPhase("setup")
+      return // Error is already handled by the hook's error state
+    }
+
+    timerRef.current = setInterval(() => {
+      const elapsed = Date.now() - startTimeRef.current
+      setElapsedMs(elapsed)
+
+      if (elapsed >= selectedTime * 1000) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current)
+          timerRef.current = null
+        }
+        handleStopAndUpload() // Trigger the upload pipeline
+      }
+    }, 50)
+  }, [selectedTime, startRecording, handleStopAndUpload])
 
   const error = structureError || recorderError?.message
 
@@ -157,12 +183,20 @@ export function DrillController() {
       {phase === "complete" && (
         <div className="flex flex-col items-center gap-6">
           <div className="text-center">
-            <h2 className="text-2xl font-semibold">Complete</h2>
-            <p className="text-muted-foreground mt-1">Recording finished at {selectedTime} seconds</p>
+            <h2 className="text-2xl font-semibold">
+              {isUploading ? "Saving Recording..." : "Practice Complete"}
+            </h2>
+            <p className="text-muted-foreground mt-1">
+              {isUploading 
+                ? "Please wait while we secure your audio." 
+                : `Recording saved (${selectedTime}s)`}
+            </p>
           </div>
-          <Button onClick={resetDrill} variant="secondary">
-            New Drill
-          </Button>
+          {!isUploading && (
+            <Button onClick={resetDrill} variant="secondary">
+              New Drill
+            </Button>
+          )}
         </div>
       )}
     </div>
